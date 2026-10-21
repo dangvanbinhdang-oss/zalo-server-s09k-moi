@@ -9,6 +9,7 @@ let qrCodeData = null;
 let loginStatus = 'Chưa đăng nhập';
 let apiInstance = null;
 
+// Hàm dọn dẹp cache phiên đăng nhập cũ
 function cleanZaloCache() {
   try {
     ['zalo_data','data','cache','cookies','.zalo'].forEach(dir=>{
@@ -29,12 +30,13 @@ app.use((req,res,next)=>{
   next();
 });
 
+// Giao diện Web hiển thị trạng thái và quét QR
 app.get('/', (req,res)=>{
   res.send(`
-<html><head><meta charset="utf-8"><title>Zalo Server s09k-moi FIX</title>
+<html><head><meta charset="utf-8"><title>Zalo Server An Toàn</title>
 <style>body{font-family:sans-serif;text-align:center;padding:30px;background:#f0f2f5}.card{background:white;padding:30px;border-radius:12px;max-width:500px;margin:0 auto}.status{padding:10px;border-radius:6px;margin:15px 0;font-weight:bold}.waiting{background:#fff3cd;color:#856404}.success{background:#d4edda;color:#155724}#qr{min-height:300px;display:flex;align-items:center;justify-content:center;background:#fafafa;border:2px dashed #ddd;border-radius:8px;margin:20px 0}</style>
 </head><body><div class="card">
-<h1 style="color:#0084ff">Zalo Server s09k-moi FIX</h1>
+<h1 style="color:#0084ff">Zalo Server - Chống Gửi Nhầm</h1>
 <div id="status" class="status waiting">${loginStatus}</div>
 <div id="qr">Đang tạo QR... vui lòng đợi 20s</div>
 <button onclick="location.reload()" style="padding:12px 24px;background:#0084ff;color:white;border:none;border-radius:6px;margin:5px">🔄 Tải lại QR</button>
@@ -61,86 +63,118 @@ setInterval(loadQR,4000); loadQR();
 app.get('/api/qr', (req,res)=> res.json({qr:qrCodeData,status:loginStatus}));
 app.get('/api/logout', (req,res)=>{ cleanZaloCache(); apiInstance=null; qrCodeData=null; loginStatus='Đã đăng xuất - Đang tạo QR mới...'; res.json({ok:true}); setTimeout(startZaloLogin,1000); });
 
+// === API GỬI TIN NHẮN (ĐÃ CÓ BẢO VỆ CHỐNG GỬI NHẦM CÁ NHÂN) ===
 app.post('/api/send', async (req,res)=>{
   try{
     if(!apiInstance) return res.status(400).json({error:'Chưa đăng nhập'});
     let {groupId,message}=req.body;
-    groupId=groupId.toString().replace(/^'/,'').replace(/[^0-9]/g,'').trim();
-    const result=await apiInstance.sendMessage(message,groupId);
-    res.json({success:true,groupId,result});
-  }catch(e){ res.status(500).json({error:e.message}); }
+    
+    // Làm sạch ID nhóm
+    groupId = groupId ? groupId.toString().replace(/^'/,'').trim() : '';
+    
+    if (!groupId) {
+      return res.status(400).json({ error: 'Mã nhóm không hợp lệ hoặc bị trống' });
+    }
+
+    // KIỂM TRA CHẶN: Nếu ID trông giống Số Điện Thoại hoặc quá ngắn -> Tuyệt đối không gửi
+    if (/^(0|84|\+84)?\d{9,11}$/.test(groupId)) {
+      return res.status(400).json({ error: 'BẢO VỆ: Từ chối gửi vì ID này là Số Điện Thoại cá nhân!' });
+    }
+    
+    if (groupId.length < 12) {
+      return res.status(400).json({ error: 'BẢO VỆ: ID quá ngắn, không phải Group ID chuẩn!' });
+    }
+
+    const result = await apiInstance.sendMessage(message, groupId);
+    res.json({success:true, groupId, result});
+  }catch(e){ 
+    res.status(500).json({error: e.message}); 
+  }
 });
 
+// === API LẤY DANH SÁCH NHÓM (CHỈ LẤY NHÓM THẬT) ===
 app.get('/api/groups', async (req,res)=>{
   try{
     if(!apiInstance) return res.status(400).json({error:'Chưa đăng nhập',groups:[]});
-    const raw=await apiInstance.getAllGroups();
-    let ids=raw?.gridVerMap?Object.keys(raw.gridVerMap):Object.keys(raw).filter(k=>/^\d{10,}$/.test(k));
-    let nameMap={};
-    for(let i=0;i<Math.min(ids.length,80);i++){
+    const raw = await apiInstance.getAllGroups();
+    let ids = raw?.gridVerMap ? Object.keys(raw.gridVerMap) : Object.keys(raw).filter(k=>/^\d{10,}$/.test(k));
+    let groups = [];
+    
+    for(let i = 0; i < Math.min(ids.length, 100); i++){
       try{
-        const info=await apiInstance.getGroupInfo(ids[i]);
-        const g=info?.gridInfoMap?.[ids[i]]||info?.[ids[i]]||info;
-        const name=g?.name||g?.groupName||"";
-        if(name && name.length>2) nameMap[ids[i]]=name;
-      }catch{} await new Promise(r=>setTimeout(r,400));
+        const info = await apiInstance.getGroupInfo(ids[i]);
+        const g = info?.gridInfoMap?.[ids[i]] || info?.[ids[i]] || info;
+        const name = g?.name || g?.groupName || "";
+        
+        // Điều kiện lọc nghiêm ngặt để chỉ lấy nhóm thật:
+        // 1. Phải có tên
+        // 2. ID phải dài >= 12 ký tự (ID nhóm Zalo luôn dài hơn ID cá nhân/SĐT)
+        // 3. Tên không được chứa các từ khóa giả mạo cá nhân
+        if (name && ids[i].length >= 12) {
+          const lowerName = name.toLowerCase();
+          if (!/^(bạn bè|người dùng|user|friend)/.test(lowerName)) {
+            groups.push({ id: ids[i], name: name });
+          }
+        }
+      }catch{} 
+      await new Promise(r => setTimeout(r, 300));
     }
-    const groups=Object.keys(nameMap).map(id=>({id,name:nameMap[id]}));
-    res.json({total:ids.length,totalWithName:groups.length,groups,nameMap});
-  }catch(e){ res.status(500).json({error:e.message,groups:[]}); }
+    res.json({total: ids.length, totalValid: groups.length, groups});
+  }catch(e){ 
+    res.status(500).json({error: e.message, groups:[]}); 
+  }
 });
 
+// Hàm khởi động quy trình đăng nhập Zalo
 async function startZaloLogin(){
   try{
     console.log('=== BẮT ĐẦU LOGIN QR ===');
     cleanZaloCache();
-    qrCodeData=null;
-    loginStatus='Đang tạo QR Code...';
-    const zalo=new Zalo();
+    qrCodeData = null;
+    loginStatus = 'Đang tạo QR Code...';
+    const zalo = new Zalo();
     
-    // DÙNG LẠI CÁCH CŨ CỦA BẠN - MỚI CHẠY ĐƯỢC
-    const api=await zalo.loginQR({}, (qrEvent)=>{
+    const api = await zalo.loginQR({}, (qrEvent)=>{
       try{
-        console.log('QR EVENT:', typeof qrEvent, JSON.stringify(qrEvent).slice(0,200));
-        let qrStr=null;
-        if(typeof qrEvent==='string') qrStr=qrEvent;
-        else if(qrEvent?.data && typeof qrEvent.data==='string') qrStr=qrEvent.data;
-        else if(qrEvent?.image) qrStr=qrEvent.image;
-        else if(qrEvent?.qr) qrStr=qrEvent.qr;
-        else if(qrEvent?.data?.image) qrStr=qrEvent.data.image;
+        let qrStr = null;
+        if(typeof qrEvent==='string') qrStr = qrEvent;
+        else if(qrEvent?.data && typeof qrEvent.data==='string') qrStr = qrEvent.data;
+        else if(qrEvent?.image) qrStr = qrEvent.image;
+        else if(qrEvent?.qr) qrStr = qrEvent.qr;
+        else if(qrEvent?.data?.image) qrStr = qrEvent.data.image;
         
         if(qrStr){
-          if(qrStr.startsWith('data:image')){
-            qrCodeData=qrStr;
-          }else if(qrStr.startsWith('http')){
-            qrCodeData=qrStr;
-          }else if(qrStr.length>20){
-            // Tạo ảnh QR từ text
+          if(qrStr.startsWith('data:image') || qrStr.startsWith('http')){
+            qrCodeData = qrStr;
+          }else if(qrStr.length > 20){
             if(qrStr.startsWith('/9j') || qrStr.startsWith('iVBOR')){
-              qrCodeData='data:image/png;base64,'+qrStr;
+              qrCodeData = 'data:image/png;base64,' + qrStr;
             }else{
               QRCode.toDataURL(qrStr,(err,url)=>{
-                if(!err) qrCodeData=url;
-                else qrCodeData=`https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(qrStr)}`;
+                if(!err) qrCodeData = url;
+                else qrCodeData = `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(qrStr)}`;
               });
             }
           }
-          loginStatus='Đã có QR Code - Mở Zalo quét ngay!';
+          loginStatus = 'Đã có QR Code - Mở Zalo quét ngay!';
         }
-      }catch(e){ console.log('Lỗi xử lý QR:',e.message); }
+      }catch(e){ console.log('Lỗi xử lý QR:', e.message); }
     });
 
     if(api && api.sendMessage){
-      apiInstance=api;
-      loginStatus=`Đã đăng nhập thành công! ${api.getOwnId?api.getOwnId():''}`;
-      qrCodeData=null;
+      apiInstance = api;
+      loginStatus = `Đã đăng nhập thành công! ${api.getOwnId ? api.getOwnId() : ''}`;
+      qrCodeData = null;
       console.log(loginStatus);
     }
   }catch(err){
-    console.error('Lỗi login:',err);
-    loginStatus='Lỗi: '+err.message+' - Thử lại sau 10s';
-    setTimeout(startZaloLogin,10000);
+    console.error('Lỗi login:', err);
+    loginStatus = 'Lỗi: ' + err.message + ' - Thử lại sau 10s';
+    setTimeout(startZaloLogin, 10000);
   }
 }
 
-app.listen(PORT,()=>{ console.log('Server running '+PORT); startZaloLogin(); });
+app.listen(PORT, ()=>{ 
+  console.log('Server running on port ' + PORT); 
+  startZaloLogin(); 
+});
