@@ -9,6 +9,33 @@ let qrCodeData = null;
 let loginStatus = 'Chưa đăng nhập';
 let apiInstance = null;
 
+
+function cleanZaloCache() {
+  try {
+    const toDelete = [];
+    // Tìm file credential thường gặp của zca-js
+    const files = fs.readdirSync('.');
+    files.forEach(f => {
+      if (f.includes('zalo') || f.includes('cred') || f.includes('cookie') || f.endsWith('.json')) {
+        if (f !== 'package.json' && f !== 'package-lock.json') {
+          // Chỉ xóa file khả nghi, không xóa package.json
+          if (f.includes('zalo') || f === 'cookies.json' || f === 'credentials.json' || f === 'appstate.json') {
+            toDelete.push(f);
+          }
+        }
+      }
+    });
+    // Xóa thư mục cache
+    ['zalo_data', 'data', 'cache', 'cookies', '.zalo'].forEach(dir => {
+      try { if (fs.existsSync(dir)) { fs.rmSync(dir, { recursive: true, force: true }); console.log('Đã xóa thư mục:', dir); } } catch {}
+    });
+    toDelete.forEach(f => {
+      try { if (fs.existsSync(f)) { fs.unlinkSync(f); console.log('Đã xóa file:', f); } } catch {}
+    });
+  } catch (e) { console.log('Lỗi clean cache:', e.message); }
+}
+
+
 app.use(express.json());
 
 // Cho phép Google Sheets gọi - PHẢI đặt đầu tiên
@@ -100,9 +127,9 @@ app.get('/api/status', (req, res) => {
   res.json({ status: loginStatus, hasQR: !!qrCodeData, hasAPI: !!apiInstance, uid: apiInstance ? (apiInstance.getOwnId ? apiInstance.getOwnId() : '') : '' });
 });
 
-app.get('/api/logout', (req, res) => { apiInstance = null; qrCodeData = null; loginStatus = 'Đã đăng xuất - Đang tạo QR mới...'; res.json({ success: true, message: 'Đã đăng xuất' }); setTimeout(startZaloLogin, 1000); });
-app.post('/api/logout', (req, res) => { apiInstance = null; qrCodeData = null; loginStatus = 'Đã đăng xuất - Đang tạo QR mới...'; res.json({ success: true, message: 'Đã đăng xuất' }); setTimeout(startZaloLogin, 1000); });
-app.get('/api/restart', (req, res) => { apiInstance = null; qrCodeData = null; loginStatus = 'Đang khởi động lại QR...'; res.json({ success: true }); setTimeout(startZaloLogin, 1000); });
+app.get('/api/logout', (req, res) => { cleanZaloCache(); apiInstance = null; qrCodeData = null; loginStatus = 'Đã đăng xuất - Đang tạo QR mới...'; res.json({ success: true, message: 'Đã đăng xuất, đang tạo QR mới' }); setTimeout(startZaloLogin, 1500); });
+app.post('/api/logout', (req, res) => { cleanZaloCache(); apiInstance = null; qrCodeData = null; loginStatus = 'Đã đăng xuất - Đang tạo QR mới...'; res.json({ success: true, message: 'Đã đăng xuất' }); setTimeout(startZaloLogin, 1500); });
+app.get('/api/restart', (req, res) => { cleanZaloCache(); apiInstance = null; qrCodeData = null; loginStatus = 'Đang khởi động lại QR...'; res.json({ success: true }); setTimeout(startZaloLogin, 1500); });
 
 // Gửi tin nhắn nhóm - API cho Google Sheets
 app.post('/api/send', async (req, res) => {
@@ -129,6 +156,8 @@ app.get('/api/groups', async (req, res) => {
 async function startZaloLogin() {
   try {
     console.log('=== BẮT ĐẦU ĐĂNG NHẬP ZALO QR ===');
+    cleanZaloCache();
+    qrCodeData = null;
     loginStatus = 'Đang tạo QR Code...';
     const zalo = new Zalo();
     console.log('Gọi zalo.loginQR()...');
