@@ -12,6 +12,15 @@ let apiInstance = null;
 app.use(express.json());
 app.use(express.static('public'));
 
+// Cho phép Google Sheets gọi
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 // Trang chủ hiện QR
 app.get('/', (req, res) => {
   res.send(`
@@ -38,7 +47,7 @@ pre{white-space:pre-wrap;word-break:break-all;background:#f8f9fa;padding:15px;bo
 <div id="qr">Đang tạo QR Code... vui lòng đợi 10-20s<br>Nếu không hiện, bấm F5 hoặc bấm nút Tải lại</div>
 <button onclick="location.reload()">🔄 Tải lại QR</button>
 <button onclick="getStatus()">📊 Kiểm tra trạng thái</button>
-<p style="margin-top:20px;font-size:14px;color:#666">Link server của bạn:<br><b>https://zalo-server-s09k.onrender.com</b><br>Dán link này vào ô B1 Google Sheets</p>
+<p style="margin-top:20px;font-size:14px;color:#666">Link server của bạn:<br><b>https://zalo-server-s09k-moi.onrender.com</b><br>Dán link này vào ô B1 Google Sheets</p>
 <pre id="log">Đang chờ QR...</pre>
 </div>
 <script>
@@ -146,21 +155,15 @@ async function startZaloLogin() {
       }
     });
     
-    // Nếu loginQR trả về QR trực tiếp
-    if (typeof api === 'string' && api.startsWith('data:image')) {
-      qrCodeData = api;
-    }
-    
-    // Lưu ý: Một số phiên bản zca-js trả về khác nhau, nên bắt thêm event
-    if (api && api.listener) {
+    // api chính là instance sau khi quét QR thành công
+    if (api && (api.listener || api.sendMessage)) {
       apiInstance = api;
-      loginStatus = `Đã đăng nhập thành công! UID: ${api.getOwnId ? api.getOwnId() : 'unknown'}`;
+      try { const uid = api.getOwnId ? api.getOwnId() : ''; loginStatus = `Đã đăng nhập thành công! ${uid}`; } catch { loginStatus = 'Đã đăng nhập thành công!'; }
       console.log(loginStatus);
       qrCodeData = null;
-      
-      api.listener.on('message', (msg) => {
-        console.log('Nhận tin nhắn:', msg);
-      });
+      try { api.listener.on('message', (msg) => { console.log('Nhận tin nhắn:', msg); }); } catch {}
+    } else if (typeof api === 'string' && api.startsWith('data:image')) {
+      qrCodeData = api;
     }
   } catch (err) {
     console.error('Lỗi đăng nhập Zalo:', err);
@@ -171,6 +174,6 @@ async function startZaloLogin() {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Truy cập https://zalo-server-s09k.onrender.com để lấy QR`);
+  console.log(`Truy cập https://zalo-server-s09k-moi.onrender.com để lấy QR`);
   startZaloLogin();
 });
