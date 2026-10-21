@@ -10,9 +10,18 @@ let loginStatus = 'Chưa đăng nhập';
 let apiInstance = null;
 
 app.use(express.json());
-app.use(express.static('public'));
 
-// Cho phép Google Sheets gọi
+// Cho phép Google Sheets gọi - PHẢI đặt đầu tiên
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
+app.use(express.static('public')); 
+// old cors removed marker
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -47,6 +56,7 @@ pre{white-space:pre-wrap;word-break:break-all;background:#f8f9fa;padding:15px;bo
 <div id="qr">Đang tạo QR Code... vui lòng đợi 10-20s<br>Nếu không hiện, bấm F5 hoặc bấm nút Tải lại</div>
 <button onclick="location.reload()">🔄 Tải lại QR</button>
 <button onclick="getStatus()">📊 Kiểm tra trạng thái</button>
+<button onclick="logout()" style="background:#ff4444">🚪 Đăng xuất - Đổi Zalo khác</button>
 <p style="margin-top:20px;font-size:14px;color:#666">Link server của bạn:<br><b>https://zalo-server-s09k-moi.onrender.com</b><br>Dán link này vào ô B1 Google Sheets</p>
 <pre id="log">Đang chờ QR...</pre>
 </div>
@@ -69,9 +79,8 @@ async function loadQR(){
     document.getElementById('qr').innerHTML='Lỗi: '+e.message;
   }
 }
-async function getStatus(){
-  loadQR();
-}
+async function getStatus(){ loadQR(); }
+async function logout(){ if(!confirm("Đăng xuất Zalo hiện tại để quét Zalo MỚI?")) return; document.getElementById("qr").innerHTML="Đang đăng xuất..."; await fetch("/api/logout"); setTimeout(()=>location.reload(), 2000); }
 setInterval(loadQR, 5000);
 loadQR();
 </script>
@@ -88,8 +97,12 @@ app.get('/api/qr', async (req, res) => {
 });
 
 app.get('/api/status', (req, res) => {
-  res.json({ status: loginStatus, hasQR: !!qrCodeData, hasAPI: !!apiInstance });
+  res.json({ status: loginStatus, hasQR: !!qrCodeData, hasAPI: !!apiInstance, uid: apiInstance ? (apiInstance.getOwnId ? apiInstance.getOwnId() : '') : '' });
 });
+
+app.get('/api/logout', (req, res) => { apiInstance = null; qrCodeData = null; loginStatus = 'Đã đăng xuất - Đang tạo QR mới...'; res.json({ success: true, message: 'Đã đăng xuất' }); setTimeout(startZaloLogin, 1000); });
+app.post('/api/logout', (req, res) => { apiInstance = null; qrCodeData = null; loginStatus = 'Đã đăng xuất - Đang tạo QR mới...'; res.json({ success: true, message: 'Đã đăng xuất' }); setTimeout(startZaloLogin, 1000); });
+app.get('/api/restart', (req, res) => { apiInstance = null; qrCodeData = null; loginStatus = 'Đang khởi động lại QR...'; res.json({ success: true }); setTimeout(startZaloLogin, 1000); });
 
 // Gửi tin nhắn nhóm - API cho Google Sheets
 app.post('/api/send', async (req, res) => {
