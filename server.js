@@ -131,15 +131,69 @@ app.get('/api/logout', (req, res) => { cleanZaloCache(); apiInstance = null; qrC
 app.post('/api/logout', (req, res) => { cleanZaloCache(); apiInstance = null; qrCodeData = null; loginStatus = 'Đã đăng xuất - Đang tạo QR mới...'; res.json({ success: true, message: 'Đã đăng xuất' }); setTimeout(startZaloLogin, 1500); });
 app.get('/api/restart', (req, res) => { cleanZaloCache(); apiInstance = null; qrCodeData = null; loginStatus = 'Đang khởi động lại QR...'; res.json({ success: true }); setTimeout(startZaloLogin, 1500); });
 
-// Gửi tin nhắn nhóm - API cho Google Sheets
+// Gửi tin nhắn nhóm - API cho Google Sheets - FIX gửi sai nhóm
 app.post('/api/send', async (req, res) => {
   try {
-    const { groupId, message } = req.body;
+    let { groupId, message } = req.body;
     if (!apiInstance) return res.status(400).json({ error: 'Chưa đăng nhập Zalo' });
-    const result = await apiInstance.sendMessage(message, groupId);
-    res.json({ success: true, result });
+    
+    // Đảm bảo groupId là string 19 số, không bị làm tròn
+    groupId = groupId.toString().replace(/^'/, '').split('.')[0].replace(/[^0-9]/g,'').trim();
+    console.log(`Yêu cầu gửi tới groupId: ${groupId}, message: ${message.slice(0,50)}`);
+    
+    // Lấy tên nhóm để xác nhận
+    let groupName = '';
+    try {
+      const info = await apiInstance.getGroupInfo(groupId);
+      let singleInfo = null;
+      if (info && info.gridInfoMap && info.gridInfoMap[groupId]) singleInfo = info.gridInfoMap[groupId];
+      else if (info && info[groupId]) singleInfo = info[groupId];
+      else if (info && info.name) singleInfo = info;
+      else singleInfo = info;
+      if (singleInfo) groupName = singleInfo.name || singleInfo.groupName || '';
+      console.log(`Tên nhóm ${groupId} là: ${groupName}`);
+    } catch (e) {
+      console.log('Không lấy được tên nhóm:', e.message);
+    }
+    
+    // Thử gửi - zca-js có thể cần type = 1 cho group
+    let result = null;
+    let sendError = null;
+    
+    // Cách 1: Gửi thường (string)
+    try {
+      result = await apiInstance.sendMessage(message, groupId);
+      console.log('Gửi cách 1 OK:', result);
+    } catch (e1) {
+      console.log('Gửi cách 1 lỗi:', e1.message);
+      sendError = e1.message;
+      // Cách 2: Gửi với type Group
+      try {
+        // Thử với ThreadType.Group = 1 hoặc 2
+        result = await apiInstance.sendMessage(message, groupId, 1);
+        console.log('Gửi cách 2 (type=1) OK');
+      } catch (e2) {
+        console.log('Gửi cách 2 lỗi:', e2.message);
+        try {
+          result = await apiInstance.sendMessage(message, groupId, 0);
+          console.log('Gửi cách 3 (type=0) OK');
+        } catch (e3) {
+          console.log('Gửi cách 3 lỗi:', e3.message);
+          throw e1; // Ném lỗi đầu
+        }
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      groupId: groupId,
+      groupName: groupName,
+      result: result,
+      message: `Đã gửi tới nhóm ${groupName} (${groupId})`
+    });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('Lỗi gửi:', e);
+    res.status(500).json({ error: e.message, stack: e.stack });
   }
 });
 
