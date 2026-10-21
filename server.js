@@ -146,8 +146,103 @@ app.post('/api/send', async (req, res) => {
 app.get('/api/groups', async (req, res) => {
   try {
     if (!apiInstance) return res.status(400).json({ error: 'Chưa đăng nhập' });
-    const groups = await apiInstance.getAllGroups();
-    res.json(groups);
+    
+    const raw = await apiInstance.getAllGroups();
+    console.log('RAW getAllGroups:', JSON.stringify(raw).substring(0,1000));
+    
+    let groupIds = [];
+    if (raw && raw.gridVerMap) {
+      groupIds = Object.keys(raw.gridVerMap);
+    } else if (Array.isArray(raw)) {
+      groupIds = raw.map(g => typeof g === 'string' ? g : (g.gridId || g.id || g.groupId)).filter(Boolean);
+    } else if (raw && typeof raw === 'object') {
+      groupIds = Object.keys(raw).filter(k => k.length > 10);
+    }
+    
+    console.log('Total IDs:', groupIds.length);
+    
+    if (groupIds.length === 0) {
+      return res.json({ total: 0, groupIds: [], groups: [], raw });
+    }
+    
+    // Lấy tên thật bằng getGroupInfo - chia batch nhỏ
+    let nameMap = {};
+    
+    try {
+      if (apiInstance.getGroupInfo) {
+        const batchSize = 5;
+        const limit = Math.min(groupIds.length, 150);
+        for (let i = 0; i < limit; i += batchSize) {
+          const batch = groupIds.slice(i, i + batchSize);
+          console.log(`Đang lấy tên batch ${i/batchSize+1}/${Math.ceil(limit/batchSize)}:`, batch);
+          for (const gid of batch) {
+            try {
+              const info = await apiInstance.getGroupInfo(gid);
+              let singleInfo = null;
+              if (info && info.gridInfoMap && info.gridInfoMap[gid]) {
+                singleInfo = info.gridInfoMap[gid];
+              } else if (info && info[gid]) {
+                singleInfo = info[gid];
+              } else if (info && info.name) {
+                singleInfo = info;
+              } else if (info && info.data && info.data.name) {
+                singleInfo = info.data;
+              } else {
+                singleInfo = info;
+              }
+              
+              if (singleInfo) {
+                const name = singleInfo.name || singleInfo.groupName || singleInfo.data?.name || singleInfo.gridName || '';
+                if (name) {
+                  nameMap[gid] = name;
+                  console.log(`Found name for ${gid}: ${name}`);
+                }
+              }
+            } catch (e) {
+              console.log(`Lỗi lấy ${gid}:`, e.message);
+            }
+            await new Promise(r => setTimeout(r, 800));
+          }
+        }
+      }
+    } catch (e) {
+      console.log('Lỗi chung getGroupInfo:', e.message);
+    }
+    
+    console.log('Đã lấy được', Object.keys(nameMap).length, 'tên thật');
+    
+    const groups = groupIds.map(id => ({
+      id: id,
+      name: nameMap[id] || ('Nhóm ' + id.slice(-4)),
+      realName: nameMap[id] || '',
+      hasRealName: !!nameMap[id]
+    }));
+    
+    res.json({
+      total: groupIds.length,
+      totalWithName: Object.keys(nameMap).length,
+      groupIds: groupIds,
+      groups: groups,
+      nameMap: nameMap,
+      raw: raw
+    });
+  } catch (e) {
+    console.error('Lỗi /api/groups:', e);
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
+});
+
+app.get('/api/group/:id', async (req, res) => {
+  try {
+    if (!apiInstance) return res.status(400).json({ error: 'Chưa đăng nhập' });
+    const gid = req.params.id;
+    let info = null;
+    try {
+      info = await apiInstance.getGroupInfo(gid);
+    } catch (e) {
+      info = { error: e.message };
+    }
+    res.json({ id: gid, info });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
