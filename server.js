@@ -111,18 +111,38 @@ async function startZaloLogin() {
     const zalo = new Zalo();
     console.log('Gọi zalo.loginQR()...');
     const api = await zalo.loginQR({}, (qrEvent) => {
-      // qrcode callback
-      if (qrEvent && qrEvent.data) {
-        // qrEvent.data là image base64 hoặc url
-        console.log('NHẬN ĐƯỢC QR EVENT:', qrEvent.type || 'qr');
-        if (qrEvent.data.startsWith('data:image') || qrEvent.data.startsWith('http')) {
-          qrCodeData = qrEvent.data;
-        } else {
-          // Nếu là text QR, tạo QR image URL
-          qrCodeData = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrEvent.data)}`;
+      try {
+        console.log('NHẬN ĐƯỢC QR EVENT raw:', typeof qrEvent, JSON.stringify(qrEvent).slice(0,500));
+        let qrData = null;
+        if (typeof qrEvent === 'string') {
+          qrData = qrEvent;
+        } else if (qrEvent && typeof qrEvent.data === 'string') {
+          qrData = qrEvent.data;
+        } else if (qrEvent && qrEvent.data && typeof qrEvent.data === 'object') {
+          // object có thể là { image: '...' } hoặc Buffer
+          qrData = qrEvent.data.image || qrEvent.data.data || JSON.stringify(qrEvent.data);
+        } else if (qrEvent && typeof qrEvent === 'object') {
+          qrData = qrEvent.image || qrEvent.qr || qrEvent.url;
         }
-        loginStatus = 'Đã có QR Code - Mở Zalo quét ngay!';
-        console.log('QR Code đã tạo, truy cập / để xem');
+
+        if (qrData) {
+          if (typeof qrData === 'string' && (qrData.startsWith('data:image') || qrData.startsWith('http'))) {
+            qrCodeData = qrData;
+          } else if (typeof qrData === 'string' && qrData.length > 50) {
+            // Có thể là base64 thô hoặc text QR
+            if (qrData.startsWith('/9j') || qrData.startsWith('iVBOR')) {
+              qrCodeData = 'data:image/png;base64,' + qrData;
+            } else {
+              qrCodeData = `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(qrData)}`;
+            }
+          } else {
+            qrCodeData = qrData;
+          }
+          loginStatus = 'Đã có QR Code - Mở Zalo quét ngay!';
+          console.log('QR Code đã tạo thành công!');
+        }
+      } catch (e) {
+        console.error('Lỗi xử lý QR event:', e);
       }
     });
     
