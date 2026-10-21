@@ -61,7 +61,7 @@ setInterval(loadQR,4000); loadQR();
 app.get('/api/qr', (req,res)=> res.json({qr:qrCodeData,status:loginStatus}));
 app.get('/api/logout', (req,res)=>{ cleanZaloCache(); apiInstance=null; qrCodeData=null; loginStatus='Đã đăng xuất - Đang tạo QR mới...'; res.json({ok:true}); setTimeout(startZaloLogin,1000); });
 
-// === API GỬI TIN NHẮN (BẢO VỆ TUYỆT ĐỐI) ===
+// === API GỬI TIN NHẮN (BẢO VỆ TUYỆT ĐỐI CHỐNG GỬI NHẦM CÁ NHÂN) ===
 app.post('/api/send', async (req,res)=>{
   try{
     if(!apiInstance) return res.status(400).json({error:'Chưa đăng nhập'});
@@ -73,13 +73,13 @@ app.post('/api/send', async (req,res)=>{
       return res.status(400).json({error: 'Mã nhóm bị trống'});
     }
 
-    // 1. Chặn số điện thoại
+    // Chặn số điện thoại
     if (/^(0|84|\+84)?\d{9,11}$/.test(groupId)) {
       return res.status(400).json({error: 'BẢO VỆ: Từ chối gửi vì đây là Số Điện Thoại!'});
     }
     
-    // 2. Chặn các ID quá ngắn hoặc không đúng định dạng nhóm (ID nhóm Zalo thường rất dài, dạng g_xxxx hoặc dãy số đặc thù)
-    if (groupId.length < 15 && !groupId.startsWith('g')) {
+    // Chặn ID quá ngắn hoặc không phải định dạng nhóm
+    if (groupId.length < 12 && !groupId.startsWith('g')) {
       return res.status(400).json({error: 'BẢO VỆ: Từ chối gửi vì đây là ID cá nhân/người lạ!'});
     }
 
@@ -90,13 +90,12 @@ app.post('/api/send', async (req,res)=>{
   }
 });
 
-// === API LẤY DANH SÁCH NHÓM (LỌC CỰC KỲ GẮT GAO) ===
+// === API LẤY DANH SÁCH NHÓM (CHẶN HOÀN TOÀN TRÒ CHUYỆN CÁ NHÂN) ===
 app.get('/api/groups', async (req,res)=>{
   try{
     if(!apiInstance) return res.status(400).json({error:'Chưa đăng nhập',groups:[]});
     const raw = await apiInstance.getAllGroups();
     
-    // Lấy danh sách ID từ các cấu trúc trả về khác nhau của zca-js
     let ids = [];
     if (raw?.gridVerMap) {
       ids = Object.keys(raw.gridVerMap);
@@ -115,16 +114,14 @@ app.get('/api/groups', async (req,res)=>{
         const g = info?.gridInfoMap?.[currentId] || info?.[currentId] || info;
         const name = g?.name || g?.groupName || "";
         
-        // KIỂM TRA ĐIỀU KIỆN SỐNG CÒN CỦA NHÓM:
-        // - Phải có tên nhóm
-        // - Phải có các thuộc tính đặc trưng của group (members, adminId, hoặc cờ xác định group)
-        // - Tuyệt đối loại bỏ ID cá nhân (ID cá nhân thường ngắn hoặc không có danh sách thành viên nhóm)
+        // KIỂM TRA ĐIỀU KIỆN CHẶN CÁ NHÂN:
+        // 1. Phải có tên và tên KHÔNG ĐƯỢC chứa cụm từ "trò chuyện cá nhân"
+        // 2. Phải có thông tin thành viên nhóm (members, totalMember, v.v.)
         const hasMembers = g?.members || g?.memberList || g?.totalMember || g?.adminId || g?.creatorId;
-        const isNotUser = currentId.length >= 15 || currentId.startsWith('g');
+        const isPersonalChat = /trò chuyện cá nhân/i.test(name) || /chuyện cá nhân/i.test(name);
 
-        if (name && hasMembers && isNotUser) {
+        if (name && hasMembers && !isPersonalChat && currentId.length >= 12) {
           const lowerName = name.toLowerCase();
-          // Lọc bỏ các tên rác hoặc tên gợi nhớ tài khoản cá nhân
           if (!/^(bạn bè|người dùng|user|friend|người lạ)/.test(lowerName)) {
             groups.push({ id: currentId, name: name });
           }
@@ -143,7 +140,7 @@ async function startZaloLogin(){
     console.log('=== BẮT ĐẦU LOGIN QR ===');
     cleanZaloCache();
     qrCodeData = null;
-    loginStatus = 'Đang tạo QR Code...';
+    loginStatus = 'Chưa đăng nhập';
     const zalo = new Zalo();
     
     const api = await zalo.loginQR({}, (qrEvent)=>{
