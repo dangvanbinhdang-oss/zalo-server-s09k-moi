@@ -63,36 +63,35 @@ setInterval(loadQR,4000); loadQR();
 app.get('/api/qr', (req,res)=> res.json({qr:qrCodeData,status:loginStatus}));
 app.get('/api/logout', (req,res)=>{ cleanZaloCache(); apiInstance=null; qrCodeData=null; loginStatus='Đã đăng xuất - Đang tạo QR mới...'; res.json({ok:true}); setTimeout(startZaloLogin,1000); });
 
-// === API GỬI TIN NHẮN (ĐÃ CÓ BẢO VỆ CHỐNG GỬI NHẦM CÁ NHÂN) ===
+// === API GỬI TIN NHẮN (BẢO VỆ TUYỆT ĐỐI CHỐNG GỬI NHẦM CÁ NHÂN) ===
 app.post('/api/send', async (req,res)=>{
   try{
     if(!apiInstance) return res.status(400).json({error:'Chưa đăng nhập'});
-    let {groupId,message}=req.body;
+    let {groupId, message} = req.body;
     
-    // Làm sạch ID nhóm
     groupId = groupId ? groupId.toString().replace(/^'/,'').trim() : '';
     
     if (!groupId) {
-      return res.status(400).json({ error: 'Mã nhóm không hợp lệ hoặc bị trống' });
+      return res.status(400).json({error: 'Mã nhóm bị trống'});
     }
 
-    // KIỂM TRA CHẶN: Nếu ID trông giống Số Điện Thoại hoặc quá ngắn -> Tuyệt đối không gửi
+    // CHẶN TUYỆT ĐỐI NẾU LÀ SỐ ĐIỆN THOẠI HOẶC ID QUÁ NGẮN (ID CÁ NHÂN)
     if (/^(0|84|\+84)?\d{9,11}$/.test(groupId)) {
-      return res.status(400).json({ error: 'BẢO VỆ: Từ chối gửi vì ID này là Số Điện Thoại cá nhân!' });
+      return res.status(400).json({error: 'BẢO VỆ: Từ chối gửi vì đây là Số Điện Thoại cá nhân!'});
     }
     
     if (groupId.length < 12) {
-      return res.status(400).json({ error: 'BẢO VỆ: ID quá ngắn, không phải Group ID chuẩn!' });
+      return res.status(400).json({error: 'BẢO VỆ: Từ chối gửi vì ID quá ngắn, không phải nhóm Zalo!'});
     }
 
     const result = await apiInstance.sendMessage(message, groupId);
-    res.json({success:true, groupId, result});
+    res.json({success: true, groupId, result});
   }catch(e){ 
     res.status(500).json({error: e.message}); 
   }
 });
 
-// === API LẤY DANH SÁCH NHÓM (CHỈ LẤY NHÓM THẬT) ===
+// === API LẤY DANH SÁCH NHÓM (CHỈ LẤY NHÓM THẬT, LOẠI BỎ NGƯỜI LẠ) ===
 app.get('/api/groups', async (req,res)=>{
   try{
     if(!apiInstance) return res.status(400).json({error:'Chưa đăng nhập',groups:[]});
@@ -106,11 +105,10 @@ app.get('/api/groups', async (req,res)=>{
         const g = info?.gridInfoMap?.[ids[i]] || info?.[ids[i]] || info;
         const name = g?.name || g?.groupName || "";
         
-        // Điều kiện lọc nghiêm ngặt để chỉ lấy nhóm thật:
-        // 1. Phải có tên
-        // 2. ID phải dài >= 12 ký tự (ID nhóm Zalo luôn dài hơn ID cá nhân/SĐT)
-        // 3. Tên không được chứa các từ khóa giả mạo cá nhân
-        if (name && ids[i].length >= 12) {
+        // KIỂM TRA CHẶT CHẼ: Phải có tên, ID dài >= 12 ký tự và có dấu hiệu cấu trúc nhóm thật
+        const isActualGroup = g?.members || g?.adminId || g?.creatorId || g?.totalMember || g?.grid;
+        
+        if (name && ids[i].length >= 12 && isActualGroup) {
           const lowerName = name.toLowerCase();
           if (!/^(bạn bè|người dùng|user|friend)/.test(lowerName)) {
             groups.push({ id: ids[i], name: name });
