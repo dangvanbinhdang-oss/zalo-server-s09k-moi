@@ -1,189 +1,609 @@
-const express = require('express');
-const fs = require('fs');
-const { Zalo } = require('zca-js');
-const QRCode = require('qrcode');
+
+const express = require("express");
+const fs = require("fs");
+const { Zalo } = require("zca-js");
+const QRCode = require("qrcode");
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
 let qrCodeData = null;
-let loginStatus = 'Chưa đăng nhập';
+let loginStatus = "Đang khởi tạo...";
 let apiInstance = null;
+let loginInProgress = false;
+let sendInProgress = false;
 
-function cleanZaloCache() {
-  try {
-    ['zalo_data','data','cache','cookies','.zalo'].forEach(dir=>{
-      if(fs.existsSync(dir)) fs.rmSync(dir,{recursive:true,force:true});
-    });
-    fs.readdirSync('.').forEach(f=>{
-      if(['cookies.json','credentials.json','appstate.json'].includes(f) && fs.existsSync(f)) fs.unlinkSync(f);
-    });
-  } catch {}
-}
+app.use(express.json({ limit: "1mb" }));
 
-app.use(express.json());
-app.use((req,res,next)=>{
-  res.header('Access-Control-Allow-Origin','*');
-  res.header('Access-Control-Allow-Methods','GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers','Content-Type');
-  if(req.method==='OPTIONS') return res.sendStatus(200);
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+
   next();
 });
 
-app.get('/', (req,res)=>{
-  res.send(`
-<html><head><meta charset="utf-8"><title>Zalo Server An Toàn</title>
-<style>body{font-family:sans-serif;text-align:center;padding:30px;background:#f0f2f5}.card{background:white;padding:30px;border-radius:12px;max-width:500px;margin:0 auto}.status{padding:10px;border-radius:6px;margin:15px 0;font-weight:bold}.waiting{background:#fff3cd;color:#856404}.success{background:#d4edda;color:#155724}#qr{min-height:300px;display:flex;align-items:center;justify-content:center;background:#fafafa;border:2px dashed #ddd;border-radius:8px;margin:20px 0}</style>
-</head><body><div class="card">
-<h1 style="color:#0084ff">Zalo Server - Chống Gửi Nhầm</h1>
-<div id="status" class="status waiting">${loginStatus}</div>
-<div id="qr">Đang tạo QR... vui lòng đợi 20s</div>
-<button onclick="location.reload()" style="padding:12px 24px;background:#0084ff;color:white;border:none;border-radius:6px;margin:5px">🔄 Tải lại QR</button>
-<button onclick="fetch('/api/logout').then(()=>location.reload())" style="padding:12px 24px;background:#ff4444;color:white;border:none;border-radius:6px">🚪 Đăng xuất</button>
-<pre id="log" style="background:#f8f9fa;padding:10px;border-radius:6px;text-align:left;overflow:auto;max-height:150px;font-size:11px"></pre>
-</div>
-<script>
-async function loadQR(){
-  const res=await fetch('/api/qr'); const data=await res.json();
-  document.getElementById('status').textContent=data.status;
-  if(data.status.includes('Đã đăng nhập')){
-    document.getElementById('qr').innerHTML='<h2 style="color:green">✅ Đã đăng nhập!<br>'+data.status+'</h2>';
-  }else if(data.qr){
-    document.getElementById('qr').innerHTML='<img src="'+data.qr+'" style="max-width:350px"/>';
-  }else{
-    document.getElementById('qr').innerHTML=data.message||'Đang tạo QR...';
-  }
-  document.getElementById('log').textContent=JSON.stringify(data,null,2);
+// ======================================================
+// TRANG CHỦ VÀ QR ĐĂNG NHẬP
+// ======================================================
+
+app.get("/", (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zalo Server An Toàn</title>
+<style>
+body {
+  font-family: Arial, sans-serif;
+  text-align: center;
+  padding: 25px;
+  background: #f0f2f5;
 }
-setInterval(loadQR,4000); loadQR();
-</script></body></html>`);
-});
+.card {
+  background: white;
+  padding: 25px;
+  border-radius: 12px;
+  max-width: 550px;
+  margin: auto;
+  box-shadow: 0 2px 12px #0001;
+}
+.status {
+  padding: 12px;
+  border-radius: 6px;
+  margin: 15px 0;
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+.waiting { background: #fff3cd; color: #856404; }
+.success { background: #d4edda; color: #155724; }
+.error { background: #f8d7da; color: #721c24; }
+#qr {
+  min-height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fafafa;
+  border: 2px dashed #ddd;
+  border-radius: 8px;
+  margin: 20px 0;
+  overflow-wrap: anywhere;
+}
+button {
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 6px;
+  color: white;
+  cursor: pointer;
+  margin: 5px;
+}
+.blue { background: #0084ff; }
+.red { background: #dc3545; }
+pre {
+  background: #f8f9fa;
+  padding: 10px;
+  border-radius: 6px;
+  text-align: left;
+  overflow: auto;
+  max-height: 180px;
+  font-size: 12px;
+}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2 style="color:#0084ff">Zalo Server - Chống Gửi Nhầm</h2>
+  <div id="status" class="status waiting">Đang kiểm tra...</div>
+  <div id="qr">Đang tạo QR...</div>
 
-app.get('/api/qr', (req,res)=> res.json({qr:qrCodeData,status:loginStatus}));
-app.get('/api/logout', (req,res)=>{ cleanZaloCache(); apiInstance=null; qrCodeData=null; loginStatus='Đã đăng xuất - Đang tạo QR mới...'; res.json({ok:true}); setTimeout(startZaloLogin,1000); });
+  <button class="blue" onclick="loadQR()">🔄 Làm mới trạng thái</button>
+  <button class="red" onclick="logout()">🚪 Đăng xuất</button>
 
-// === API GỬI TIN NHẮN (BẢO VỆ TUYỆT ĐỐI CHỐNG GỬI NHẦM CÁ NHÂN) ===
-app.post('/api/send', async (req,res)=>{
-  try{
-    if(!apiInstance) return res.status(400).json({error:'Chưa đăng nhập'});
-    let {groupId, message} = req.body;
-    
-    groupId = groupId ? groupId.toString().replace(/^'/,'').trim() : '';
-    
-    if (!groupId) {
-      return res.status(400).json({error: 'Mã nhóm bị trống'});
+  <pre id="log">Đang tải...</pre>
+</div>
+
+<script>
+async function loadQR() {
+  try {
+    const res = await fetch("/api/qr");
+    const data = await res.json();
+
+    const status = document.getElementById("status");
+    status.textContent = data.status || "Không rõ trạng thái";
+    status.className = "status " +
+      (data.loggedIn ? "success" :
+       data.error ? "error" : "waiting");
+
+    const qr = document.getElementById("qr");
+
+    if (data.loggedIn) {
+      qr.innerHTML =
+        "<h3 style='color:green'>✅ Đã đăng nhập Zalo</h3>";
+    } else if (data.qr) {
+      qr.innerHTML =
+        "<img alt='QR đăng nhập Zalo' src='" +
+        data.qr +
+        "' style='max-width:100%;width:350px'>";
+    } else {
+      qr.textContent = data.message || data.status ||
+        "Đang chờ mã QR...";
     }
 
-    // Chặn số điện thoại
-    if (/^(0|84|\+84)?\d{9,11}$/.test(groupId)) {
-      return res.status(400).json({error: 'BẢO VỆ: Từ chối gửi vì đây là Số Điện Thoại!'});
-    }
-    
-    // Chặn ID quá ngắn hoặc không phải định dạng nhóm
-    if (groupId.length < 12 && !groupId.startsWith('g')) {
-      return res.status(400).json({error: 'BẢO VỆ: Từ chối gửi vì đây là ID cá nhân/người lạ!'});
-    }
+    document.getElementById("log").textContent =
+      JSON.stringify(data, null, 2);
 
-    const result = await apiInstance.sendMessage(message, groupId);
-    res.json({success: true, groupId, result});
-  }catch(e){ 
-    res.status(500).json({error: e.message}); 
+  } catch (e) {
+    document.getElementById("status").textContent =
+      "Không kết nối được máy chủ";
+    document.getElementById("qr").textContent = e.message;
   }
+}
+
+async function logout() {
+  if (!confirm("Bạn có chắc muốn đăng xuất Zalo?")) return;
+
+  try {
+    const res = await fetch("/api/logout", { method: "POST" });
+    const data = await res.json();
+    alert(data.message || "Đã gửi yêu cầu đăng xuất");
+    loadQR();
+  } catch (e) {
+    alert("Lỗi: " + e.message);
+  }
+}
+
+loadQR();
+setInterval(loadQR, 4000);
+</script>
+</body>
+</html>`);
 });
 
-// === API LẤY DANH SÁCH NHÓM (CHẶN HOÀN TOÀN TRÒ CHUYỆN CÁ NHÂN) ===
-app.get('/api/groups', async (req,res)=>{
-  try{
-    if(!apiInstance) return res.status(400).json({error:'Chưa đăng nhập',groups:[]});
+// ======================================================
+// TRẠNG THÁI QR
+// ======================================================
+
+app.get("/api/qr", (req, res) => {
+  res.json({
+    status: loginStatus,
+    loggedIn: Boolean(apiInstance),
+    qr: qrCodeData,
+    message: apiInstance
+      ? "Zalo đã kết nối."
+      : "Mở ứng dụng Zalo để quét QR nếu mã đang hiển thị."
+  });
+});
+
+// ======================================================
+// DỌN CACHE ĐĂNG NHẬP
+// Chỉ gọi khi chủ máy chủ chủ động đăng xuất.
+// ======================================================
+
+function cleanZaloCache() {
+  const dirs = [
+    "zalo_data",
+    "data",
+    "cache",
+    "cookies",
+    ".zalo"
+  ];
+
+  for (const dir of dirs) {
+    try {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (e) {
+      console.error("Không xóa được thư mục:", dir, e.message);
+    }
+  }
+
+  const files = [
+    "cookies.json",
+    "credentials.json",
+    "appstate.json"
+  ];
+
+  for (const file of files) {
+    try {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch (e) {
+      console.error("Không xóa được file:", file, e.message);
+    }
+  }
+}
+
+app.post("/api/logout", (req, res) => {
+  if (loginInProgress) {
+    return res.status(409).json({
+      success: false,
+      message: "Đang xử lý đăng nhập, vui lòng thử lại sau."
+    });
+  }
+
+  apiInstance = null;
+  qrCodeData = null;
+  loginStatus = "Đang đăng xuất...";
+
+  cleanZaloCache();
+
+  res.json({
+    success: true,
+    message: "Đã yêu cầu đăng xuất. Máy chủ sẽ tạo phiên QR mới."
+  });
+
+  setTimeout(() => {
+    startZaloLogin();
+  }, 1000);
+});
+
+// ======================================================
+// HÀM XÁC MINH ID NHÓM
+// ======================================================
+
+async function getVerifiedGroup_(groupId) {
+  if (!apiInstance) {
+    throw new Error("Zalo chưa đăng nhập.");
+  }
+
+  if (!groupId) {
+    throw new Error("ID nhóm trống.");
+  }
+
+  // Chỉ sử dụng cấu trúc danh sách nhóm đã nhận diện.
+  const raw = await apiInstance.getAllGroups();
+
+  if (
+    !raw ||
+    !raw.gridVerMap ||
+    typeof raw.gridVerMap !== "object" ||
+    Array.isArray(raw.gridVerMap)
+  ) {
+    throw new Error(
+      "Không xác minh được cấu trúc danh sách nhóm. Đã từ chối gửi."
+    );
+  }
+
+  const ids = Object.keys(raw.gridVerMap);
+
+  // So khớp chính xác ID, không dựa vào độ dài ID.
+  if (!ids.includes(groupId)) {
+    throw new Error(
+      "ID không nằm trong danh sách nhóm hiện tại của Zalo."
+    );
+  }
+
+  const info = await apiInstance.getGroupInfo(groupId);
+
+  // Không tự động lấy info chung nếu không tìm thấy đúng khóa ID.
+  const group = info?.gridInfoMap?.[groupId];
+
+  if (!group || typeof group !== "object") {
+    throw new Error(
+      "Không lấy được thông tin nhóm khớp chính xác ID."
+    );
+  }
+
+  const name = String(
+    group.name || group.groupName || ""
+  ).trim();
+
+  const hasMemberData =
+    Array.isArray(group.members) ||
+    Array.isArray(group.memberList) ||
+    (
+      typeof group.totalMember === "number" &&
+      group.totalMember > 0
+    ) ||
+    Boolean(group.adminId) ||
+    Boolean(group.creatorId);
+
+  if (!name || !hasMemberData) {
+    throw new Error(
+      "Không đủ thông tin xác minh nhóm. Đã từ chối gửi."
+    );
+  }
+
+  return {
+    id: groupId,
+    name: name
+  };
+}
+
+// ======================================================
+// API LẤY DANH SÁCH NHÓM
+// ======================================================
+
+app.get("/api/groups", async (req, res) => {
+  try {
+    if (!apiInstance) {
+      return res.status(400).json({
+        success: false,
+        error: "Chưa đăng nhập Zalo.",
+        groups: []
+      });
+    }
+
     const raw = await apiInstance.getAllGroups();
-    
-    let ids = [];
-    if (raw?.gridVerMap) {
-      ids = Object.keys(raw.gridVerMap);
-    } else if (Array.isArray(raw)) {
-      ids = raw.map(item => item.groupId || item.id || item.grid).filter(Boolean);
-    } else if (typeof raw === 'object' && raw !== null) {
-      ids = Object.keys(raw).filter(k => /^\d{10,}$/.test(k) || k.startsWith('g_'));
+
+    if (
+      !raw ||
+      !raw.gridVerMap ||
+      typeof raw.gridVerMap !== "object" ||
+      Array.isArray(raw.gridVerMap)
+    ) {
+      return res.status(502).json({
+        success: false,
+        error:
+          "Cấu trúc dữ liệu nhóm khác định dạng dự kiến. " +
+          "Cần kiểm tra phiên bản zca-js.",
+        groups: []
+      });
     }
 
-    let groups = [];
-    
-    for(let i = 0; i < Math.min(ids.length, 100); i++){
-      let currentId = ids[i];
-      try{
-        const info = await apiInstance.getGroupInfo(currentId);
-        const g = info?.gridInfoMap?.[currentId] || info?.[currentId] || info;
-        const name = g?.name || g?.groupName || "";
-        
-        // KIỂM TRA ĐIỀU KIỆN CHẶN CÁ NHÂN:
-        // 1. Phải có tên và tên KHÔNG ĐƯỢC chứa cụm từ "trò chuyện cá nhân"
-        // 2. Phải có thông tin thành viên nhóm (members, totalMember, v.v.)
-        const hasMembers = g?.members || g?.memberList || g?.totalMember || g?.adminId || g?.creatorId;
-        const isPersonalChat = /trò chuyện cá nhân/i.test(name) || /chuyện cá nhân/i.test(name);
+    const ids = Object.keys(raw.gridVerMap);
+    const groups = [];
+    const rejected = [];
 
-        if (name && hasMembers && !isPersonalChat && currentId.length >= 12) {
-          const lowerName = name.toLowerCase();
-          if (!/^(bạn bè|người dùng|user|friend|người lạ)/.test(lowerName)) {
-            groups.push({ id: currentId, name: name });
-          }
-        }
-      }catch{} 
-      await new Promise(r => setTimeout(r, 300));
+    for (const id of ids) {
+      try {
+        const group = await getVerifiedGroup_(id);
+        groups.push(group);
+      } catch (e) {
+        rejected.push({
+          id: id,
+          reason: e.message
+        });
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 300));
     }
-    res.json({total: ids.length, totalValid: groups.length, groups});
-  }catch(e){ 
-    res.status(500).json({error: e.message, groups:[]}); 
-  }
-});
 
-async function startZaloLogin(){
-  try{
-    console.log('=== BẮT ĐẦU LOGIN QR ===');
-    cleanZaloCache();
-    qrCodeData = null;
-    loginStatus = 'Chưa đăng nhập';
-    const zalo = new Zalo();
-    
-    const api = await zalo.loginQR({}, (qrEvent)=>{
-      try{
-        let qrStr = null;
-        if(typeof qrEvent==='string') qrStr = qrEvent;
-        else if(qrEvent?.data && typeof qrEvent.data==='string') qrStr = qrEvent.data;
-        else if(qrEvent?.image) qrStr = qrEvent.image;
-        else if(qrEvent?.qr) qrStr = qrEvent.qr;
-        else if(qrEvent?.data?.image) qrStr = qrEvent.data.image;
-        
-        if(qrStr){
-          if(qrStr.startsWith('data:image') || qrStr.startsWith('http')){
-            qrCodeData = qrStr;
-          }else if(qrStr.length > 20){
-            if(qrStr.startsWith('/9j') || qrStr.startsWith('iVBOR')){
-              qrCodeData = 'data:image/png;base64,' + qrStr;
-            }else{
-              QRCode.toDataURL(qrStr,(err,url)=>{
-                if(!err) qrCodeData = url;
-                else qrCodeData = `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(qrStr)}`;
-              });
-            }
-          }
-          loginStatus = 'Đã có QR Code - Mở Zalo quét ngay!';
-        }
-      }catch(e){ console.log('Lỗi xử lý QR:', e.message); }
+    return res.json({
+      success: true,
+      total: ids.length,
+      totalValid: groups.length,
+      groups: groups,
+      rejectedCount: rejected.length
     });
 
-    if(api && api.sendMessage){
-      apiInstance = api;
-      loginStatus = `Đã đăng nhập thành công! ${api.getOwnId ? api.getOwnId() : ''}`;
-      qrCodeData = null;
-      console.log(loginStatus);
+  } catch (e) {
+    console.error("GROUPS ERROR:", e.message);
+
+    return res.status(500).json({
+      success: false,
+      error: e.message,
+      groups: []
+    });
+  }
+});
+
+// ======================================================
+// API GỬI TIN NHẮN
+// ======================================================
+
+app.post("/api/send", async (req, res) => {
+  if (sendInProgress) {
+    return res.status(429).json({
+      success: false,
+      error: "Đang xử lý một yêu cầu gửi khác. Hãy thử lại sau."
+    });
+  }
+
+  sendInProgress = true;
+
+  try {
+    if (!apiInstance) {
+      return res.status(400).json({
+        success: false,
+        error: "Zalo chưa đăng nhập."
+      });
     }
-  }catch(err){
-    console.error('Lỗi login:', err);
-    loginStatus = 'Lỗi: ' + err.message + ' - Thử lại sau 10s';
-    setTimeout(startZaloLogin, 10000);
+
+    const groupId = String(req.body?.groupId || "")
+      .replace(/^'/, "")
+      .trim();
+
+    const expectedName = String(req.body?.groupName || "").trim();
+    const message = String(req.body?.message || "").trim();
+
+    if (!groupId) {
+      return res.status(400).json({
+        success: false,
+        error: "Thiếu ID nhóm."
+      });
+    }
+
+    if (!expectedName) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Thiếu tên nhóm xác nhận. Hãy cập nhật Google Apps Script."
+      });
+    }
+
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        error: "Nội dung tin nhắn trống."
+      });
+    }
+
+    // Xác minh lại ID và tên ngay trước khi gửi.
+    const group = await getVerifiedGroup_(groupId);
+
+    if (group.name !== expectedName) {
+      return res.status(409).json({
+        success: false,
+        error: "Tên nhóm không khớp với ID.",
+        expectedName: expectedName,
+        actualName: group.name
+      });
+    }
+
+    console.log(
+      "[SEND REQUEST]",
+      JSON.stringify({
+        groupId: group.id,
+        groupName: group.name,
+        messageLength: message.length
+      })
+    );
+
+    // Chỉ gửi sau khi kiểm tra hoàn tất.
+    const result = await apiInstance.sendMessage(
+      message,
+      group.id
+    );
+
+    console.log(
+      "[SEND RESPONSE]",
+      JSON.stringify({
+        groupId: group.id,
+        groupName: group.name,
+        result: result
+      })
+    );
+
+    return res.json({
+      success: true,
+      verifiedGroup: {
+        id: group.id,
+        name: group.name
+      },
+      result: result
+    });
+
+  } catch (e) {
+    console.error("SEND ERROR:", e.message);
+
+    return res.status(400).json({
+      success: false,
+      error: e.message
+    });
+
+  } finally {
+    sendInProgress = false;
+  }
+});
+
+// ======================================================
+// ĐĂNG NHẬP ZALO BẰNG QR
+// ======================================================
+
+async function startZaloLogin() {
+  if (loginInProgress) return;
+
+  loginInProgress = true;
+
+  try {
+    console.log("=== BẮT ĐẦU ĐĂNG NHẬP ZALO ===");
+
+    qrCodeData = null;
+    apiInstance = null;
+    loginStatus = "Đang tạo QR đăng nhập...";
+
+    const zalo = new Zalo();
+
+    const api = await zalo.loginQR({}, (qrEvent) => {
+      try {
+        let qrStr = null;
+
+        if (typeof qrEvent === "string") {
+          qrStr = qrEvent;
+        } else if (
+          typeof qrEvent?.data === "string"
+        ) {
+          qrStr = qrEvent.data;
+        } else if (
+          typeof qrEvent?.image === "string"
+        ) {
+          qrStr = qrEvent.image;
+        } else if (
+          typeof qrEvent?.qr === "string"
+        ) {
+          qrStr = qrEvent.qr;
+        } else if (
+          typeof qrEvent?.data?.image === "string"
+        ) {
+          qrStr = qrEvent.data.image;
+        }
+
+        if (!qrStr) return;
+
+        if (qrStr.startsWith("data:image/")) {
+          qrCodeData = qrStr;
+        } else if (/^https?:\/\//i.test(qrStr)) {
+          qrCodeData = qrStr;
+        } else if (
+          qrStr.startsWith("/9j/") ||
+          qrStr.startsWith("iVBOR")
+        ) {
+          qrCodeData = "data:image/png;base64," + qrStr;
+        } else {
+          QRCode.toDataURL(qrStr, (err, url) => {
+            if (!err) {
+              qrCodeData = url;
+              loginStatus = "Đã tạo QR - hãy quét bằng Zalo.";
+            } else {
+              console.error("QR ERROR:", err.message);
+              loginStatus = "Không tạo được ảnh QR.";
+            }
+          });
+        }
+
+        loginStatus = "Đã có QR Code - mở Zalo quét ngay!";
+
+      } catch (e) {
+        console.error("QR CALLBACK ERROR:", e.message);
+      }
+    });
+
+    if (!api || typeof api.sendMessage !== "function") {
+      throw new Error(
+        "Đăng nhập chưa hoàn tất hoặc phiên Zalo không hợp lệ."
+      );
+    }
+
+    apiInstance = api;
+    qrCodeData = null;
+
+    loginStatus = "Đã đăng nhập thành công!";
+    console.log(loginStatus);
+
+  } catch (e) {
+    console.error("LOGIN ERROR:", e.message);
+
+    apiInstance = null;
+    loginStatus = "Lỗi đăng nhập: " + e.message;
+
+    setTimeout(() => {
+      startZaloLogin();
+    }, 10000);
+
+  } finally {
+    loginInProgress = false;
   }
 }
 
-app.listen(PORT, ()=>{ 
-  console.log('Server running on port ' + PORT); 
-  startZaloLogin(); 
+// ======================================================
+// KHỞI ĐỘNG SERVER
+// ======================================================
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    loggedIn: Boolean(apiInstance),
+    loginStatus: loginStatus
+  });
+});
+
+app.listen(PORT, () => {
+  console.log("Server running on port " + PORT);
+  startZaloLogin();
 });
