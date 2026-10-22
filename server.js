@@ -6,6 +6,9 @@ const QRCode = require("qrcode");
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// Nơi lưu phiên đăng nhập. Dùng Persistent Disk thì đặt SESSION_FILE=/data/zalo_session.json
+const SESSION_FILE = process.env.SESSION_FILE || "zalo_session.json";
+
 let qrCodeData = null;
 let loginStatus = "Đang khởi tạo...";
 let apiInstance = null;
@@ -25,6 +28,52 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// ======================================================
+// LƯU / ĐỌC PHIÊN ĐĂNG NHẬP
+// ======================================================
+
+function saveSession(api) {
+  try {
+    const ctx = api.getContext();
+    const cookieObj = api.getCookie().toJSON();
+    const session = {
+      cookie: cookieObj && cookieObj.cookies ? cookieObj.cookies : cookieObj,
+      imei: ctx.imei,
+      userAgent: ctx.userAgent
+    };
+
+    if (!session.cookie || !session.imei || !session.userAgent) {
+      console.error("Phiên thiếu dữ liệu, không lưu.");
+      return;
+    }
+
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(session));
+    console.log("Đã lưu phiên đăng nhập vào", SESSION_FILE);
+  } catch (e) {
+    console.error("SAVE SESSION ERROR:", e.message);
+  }
+}
+
+function loadSession() {
+  try {
+    if (!fs.existsSync(SESSION_FILE)) return null;
+    const s = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8"));
+    if (!s || !s.cookie || !s.imei || !s.userAgent) return null;
+    return s;
+  } catch (e) {
+    console.error("LOAD SESSION ERROR:", e.message);
+    return null;
+  }
+}
+
+function deleteSession() {
+  try {
+    if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE);
+  } catch (e) {
+    console.error("Không xóa được file phiên:", e.message);
+  }
+}
 
 // ======================================================
 // TRANG CHỦ VÀ QR ĐĂNG NHẬP
@@ -215,6 +264,9 @@ function cleanZaloCache() {
       console.error("Không xóa được file:", file, e.message);
     }
   }
+
+  // Xóa luôn phiên đã lưu để lần sau phải quét QR mới
+  deleteSession();
 }
 
 app.post("/api/logout", (req, res) => {
@@ -454,9 +506,7 @@ app.post("/api/send", async (req, res) => {
       })
     );
 
-    // SỬA LỖI CHÍNH: phải chỉ rõ ThreadType.Group.
-    // Nếu bỏ trống, zca-js mặc định coi là chat cá nhân (User)
-    // và tin sẽ đi tới người lạ.
+    // Phải chỉ rõ ThreadType.Group, nếu không zca-js coi là chat cá nhân.
     const result = await apiInstance.sendMessage(
       message,
       group.id,
@@ -496,7 +546,7 @@ app.post("/api/send", async (req, res) => {
 });
 
 // ======================================================
-// ĐĂNG NHẬP ZALO BẰNG QR
+// ĐĂNG NHẬP ZALO: ƯU TIÊN KHÔI PHỤC PHIÊN ĐÃ LƯU, NẾU KHÔNG ĐƯỢC THÌ QUÉT QR
 // ======================================================
 
 async function startZaloLogin() {
@@ -509,68 +559,102 @@ async function startZaloLogin() {
 
     qrCodeData = null;
     apiInstance = null;
-    loginStatus = "Đang tạo QR đăng nhập...";
+    loginStatus = "Đang kiểm tra phiên đã lưu...";
 
-    const zalo = new Zalo();
+    let api = null;
 
-    const api = await zalo.loginQR({}, (qrEvent) => {
+    // 1. Thử khôi phục phiên đã lưu
+    const saved = loadSession();
+    if (saved) {
       try {
-        let qrStr = null;
+        console.log("Đang khôi phục phiên đã lưu...");
+        const zaloRestore = new Zalo();
+        api = await zaloRestore.login({
+          cookie: saved.cookie,
+          imei: saved.imei,
+          userAgent: saved.userAgent
+        });
 
-        if (typeof qrEvent === "string") {
-          qrStr = qrEvent;
-        } else if (
-          typeof qrEvent?.data === "string"
-        ) {
-          qrStr = qrEvent.data;
-        } else if (
-          typeof qrEvent?.image === "string"
-        ) {
-          qrStr = qrEvent.image;
-        } else if (
-          typeof qrEvent?.qr === "string"
-        ) {
-          qrStr = qrEvent.qr;
-        } else if (
-          typeof qrEvent?.data?.image === "string"
-        ) {
-          qrStr = qrEvent.data.image;
+        if (!api || typeof api.sendMessage !== "function") {
+          throw new Error("Phiên đã lưu không hợp lệ.");
         }
 
-        if (!qrStr) return;
-
-        if (qrStr.startsWith("data:image/")) {
-          qrCodeData = qrStr;
-        } else if (/^https?:\/\//i.test(qrStr)) {
-          qrCodeData = qrStr;
-        } else if (
-          qrStr.startsWith("/9j/") ||
-          qrStr.startsWith("iVBOR")
-        ) {
-          qrCodeData = "data:image/png;base64," + qrStr;
-        } else {
-          QRCode.toDataURL(qrStr, (err, url) => {
-            if (!err) {
-              qrCodeData = url;
-              loginStatus = "Đã tạo QR - hãy quét bằng Zalo.";
-            } else {
-              console.error("QR ERROR:", err.message);
-              loginStatus = "Không tạo được ảnh QR.";
-            }
-          });
-        }
-
-        loginStatus = "Đã có QR Code - mở Zalo quét ngay!";
-
+        console.log("Khôi phục phiên thành công, không cần quét QR.");
       } catch (e) {
-        console.error("QR CALLBACK ERROR:", e.message);
+        console.error("Khôi phục phiên thất bại:", e.message);
+        api = null;
+        deleteSession(); // phiên hỏng, xóa để quét QR mới
       }
-    });
+    }
 
-    if (!api || typeof api.sendMessage !== "function") {
-      throw new Error(
-        "Đăng nhập chưa hoàn tất hoặc phiên Zalo không hợp lệ."
-      );
+    // 2. Không khôi phục được thì quét QR
+    if (!api) {
+      loginStatus = "Đang tạo QR đăng nhập...";
+
+      const zalo = new Zalo();
+
+      api = await zalo.loginQR({}, (qrEvent) => {
+        try {
+          let qrStr = null;
+
+          if (typeof qrEvent === "string") {
+            qrStr = qrEvent;
+          } else if (
+            typeof qrEvent?.data === "string"
+          ) {
+            qrStr = qrEvent.data;
+          } else if (
+            typeof qrEvent?.image === "string"
+          ) {
+            qrStr = qrEvent.image;
+          } else if (
+            typeof qrEvent?.qr === "string"
+          ) {
+            qrStr = qrEvent.qr;
+          } else if (
+            typeof qrEvent?.data?.image === "string"
+          ) {
+            qrStr = qrEvent.data.image;
+          }
+
+          if (!qrStr) return;
+
+          if (qrStr.startsWith("data:image/")) {
+            qrCodeData = qrStr;
+          } else if (/^https?:\/\//i.test(qrStr)) {
+            qrCodeData = qrStr;
+          } else if (
+            qrStr.startsWith("/9j/") ||
+            qrStr.startsWith("iVBOR")
+          ) {
+            qrCodeData = "data:image/png;base64," + qrStr;
+          } else {
+            QRCode.toDataURL(qrStr, (err, url) => {
+              if (!err) {
+                qrCodeData = url;
+                loginStatus = "Đã tạo QR - hãy quét bằng Zalo.";
+              } else {
+                console.error("QR ERROR:", err.message);
+                loginStatus = "Không tạo được ảnh QR.";
+              }
+            });
+          }
+
+          loginStatus = "Đã có QR Code - mở Zalo quét ngay!";
+
+        } catch (e) {
+          console.error("QR CALLBACK ERROR:", e.message);
+        }
+      });
+
+      if (!api || typeof api.sendMessage !== "function") {
+        throw new Error(
+          "Đăng nhập chưa hoàn tất hoặc phiên Zalo không hợp lệ."
+        );
+      }
+
+      // Quét QR thành công thì lưu phiên cho lần sau
+      saveSession(api);
     }
 
     apiInstance = api;
@@ -598,9 +682,10 @@ async function startZaloLogin() {
 // KHỞI ĐỘNG SERVER
 // ======================================================
 
+// Trả 503 khi Zalo chưa đăng nhập để UptimeRobot báo Down và gửi email
 app.get("/health", (req, res) => {
-  res.json({
-    status: "ok",
+  res.status(apiInstance ? 200 : 503).json({
+    status: apiInstance ? "ok" : "chua dang nhap",
     loggedIn: Boolean(apiInstance),
     loginStatus: loginStatus
   });
